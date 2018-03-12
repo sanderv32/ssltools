@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# vim: set ts=2 sw=2 tw=0 ft=sh et :
+#
+# Author  : Alexander Verhaar
+# Email   : sanderv32@gmail.com
+# Date    : 9 July 2015
+# Version : 1.0
+
+PWD=$(dirname $0)
+MONO=false
+
+usage() {
+  PRG=$(basename $0)
+  echo "Usage: $PRG [--help] [--debug] [--mono] <file.pem>" 1>&2
+  exit 1
+}
+
+for arg in "$@"
+do
+  shift
+  case "$arg" in
+    "--help")   set -- "$@" "-h" ;;
+    "--mono")  set -- "$@" "-m" ;;
+    "--debug")  set -- "$@" "-d" ;;
+    *)          set -- "$@" "$arg" ;;
+  esac
+done
+
+while getopts ":dm" o; do
+    case "${o}" in
+        d)  DEBUG=echo ;;
+        m)  MONO=true ;;
+        *)  usage ;;
+    esac
+done
+shift $((OPTIND-1))
+
+[ -f $1 ] || { echo "$1 not found!"; exit 44; }
+if [ $MONO == false ]; then
+  [[ -s $PWD/bash_colors ]] && source $PWD/bash_colors
+fi
+
+CNT=0
+LINES=$(egrep -n "^\-{5}BEGIN CERT" $1 | cut -d ':' -f 1)
+for l in $LINES
+do
+  (( $CNT % 2 == 0 )) && echo -e "${CYAN}" || echo -e "${YELLOW}"
+  CMD="sed -n $l,'$'p $1 | openssl x509 -text -fingerprint -noout"
+  $DEBUG eval $CMD
+  CNT=$((CNT+1))
+done
+
+RESULT=$(openssl verify -purpose any -CAfile $1 $1)
+if [[ $RESULT =~ OK ]]; then
+  echo -e "${LGREEN}${RESULT}${NC}"
+else
+  echo -e "${RED}${RESULT}${NC}"
+fi

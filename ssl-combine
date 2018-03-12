@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# vim: set ts=2 sw=2 tw=0 ft=sh et :
+#
+# Author  : Alexander Verhaar
+# Email   : sanderv32@gmail.com
+# Date    : 22 July 2015
+# Version : 1.1
+
+# Set some default settings
+PWD=$(dirname $0)
+NAME=$(basename $0)
+OUTPUT=/dev/tty
+CAPATH=.
+TMPFILE=$(mktemp -t $NAME)
+
+get_subject() {
+  openssl x509 -text -noout -in $1 | grep "Subject:"|sed "s/.*Subject\: //g"
+}
+
+get_issuer() {
+  openssl x509 -text -noout -in $1 | grep "Issuer:"|sed "s/.*Issuer\: //g"
+}
+
+get_fingerprint() {
+  openssl x509 -fingerprint -noout -in $1 | grep "^SHA" | cut -d '=' -f 2
+}
+
+usage() {
+  PRG=$(basename $0)
+  echo "Usage: $PRG [--help] [--pfx] [--out <combined.(pem|pfx)>] [--key <keyfile>] [--capath <path>] <certificate.crt>" 1>&2
+  exit 1
+}
+
+cleanup() {
+  [ -f $TMPFILE ] && rm -f $TMPFILE
+}
+trap cleanup EXIT
+
+# Getopts is missing long opts, emulate this
+for arg in "$@"
+do
+  shift
+  case "$arg" in
+    "--help")   set -- "$@" "-h" ;;
+    "--out")    set -- "$@" "-o" ;;
+    "--key")    set -- "$@" "-k" ;;
+    "--capath") set -- "$@" "-a" ;;
+    "--pfx")    set -- "$@" "-p" ;;
+    *)          set -- "$@" "$arg" ;;
+  esac
+done
+
+# Read options
+while getopts ":o:k:a:p" o; do
+    case "${o}" in
+        o)  OUTPUT=${OPTARG} ;;
+        k)  KEYFILE=${OPTARG} ;;
+        a)  CAPATH=${OPTARG} ;;
+        p)  PFX=true ;;
+        *)  usage ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# If no parameters are given show usage
+[ $# -lt 1 ] && usage
+
+# Check if certificate exists
+[ -f $1 ] || { echo "ERROR: $1 not found!"; exit 44; }
+INPUT=$1
+
+# You chose PFX as output so make a temporary file
+if [ "$PFX" ]; then
+  [ -z "$KEYFILE" ] && { echo "ERROR: Need a key file"; exit 41; }
+  if [ "$OUTPUT" == "/dev/tty" ]; then
+    echo "ERROR: PFX needs to have an output file specified, please use -out"
+    exit 2
+  fi
+  PFX=${OUTPUT}
+  OUTPUT=${TMPFILE}
+fi
+
+# Populate the array with <file>|<subject>
+certs=()
+for i in $CAPATH/*.crt
+do
+  # If we see our own certificate skip it
+  [ "$i" == "$INPUT" ] && continue
+  # If i is not expanded to files, there are no files
+  [ "$i" == "$CAPATH/*.crt" ] && continue
+  SUBJ=$(get_subject $i)
+  certs=("${certs[@]}" "${i}|${SUBJ}")
+done
+
+# Get issuer of our certificate
+SUBJ=$(get_issuer $INPUT)
+F=$(get_fingerprint $INPUT)
+cat $INPUT > $OUTPUT
+
+# Iterate through our array
+FINGERP=("$F")
+for j in "${certs[@]}"
+do
+  for i in "${certs[@]}"
+  do
+    K=${i%%|*}
+    V=${i#*|}
+    if [ "$V" == "$SUBJ" ]; then
+      SUBJ=$(get_issuer $K)
+      F=$(get_fingerprint $K)
+      # Check if cert is already used before
+      if [[ ! "${FINGERP[@]}" =~ "$F" ]]; then
+        cat $K >> $OUTPUT
+        FINGERP=("${FINGERP[@]}" "$F")
+      fi
+    fi
+  done
+done
+
+if [ ! "${PFX}" ]; then
+  # If $KEYFILE is filled output it at
+  # the end of the $OUTPUT file.
+  [ -z "$KEYFILE" ] || cat $KEYFILE >> $OUTPUT
+else
+  openssl pkcs12 -export -in $OUTPUT -inkey $KEYFILE -out $PFX
+fi
